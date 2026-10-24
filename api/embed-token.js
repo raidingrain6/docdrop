@@ -18,7 +18,7 @@ export default async function handler(req, res) {
     .update(`${tenantId}\n${userId}`)
     .digest("hex");
 
-  const response = await fetch(`${FASTN_API_URL}/api/v1/embed/token`, {
+  const response = await fetch(`${FASTN_API_URL}/v1/embed/token`, {
     method: "POST",
     headers: {
       "x-api-key": FASTN_API_KEY,

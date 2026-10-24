@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -13,6 +13,7 @@ const integrations = [
 const FASTN_WIDGET_ID = import.meta.env.VITE_FASTN_WIDGET_ID || "wgt_651b5e32ea5a";
 const FASTN_WORKFLOW_ID = import.meta.env.VITE_FASTN_WORKFLOW_ID || "wf_a1fd67dfd0b2";
 const FASTN_EMBED_URL = import.meta.env.VITE_FASTN_EMBED_URL || "";
+const FASTN_IFRAME_BASE = "https://api.fastn.dev/v1/embed/iframe";
 
 const initialTenants = {
   acme: {
@@ -120,25 +121,34 @@ function IntegrationCard({ item, connected }) {
 }
 
 function Integrations({ tenant, tenantId, setActiveTab }) {
+  const [embedUrl, setEmbedUrl] = useState(FASTN_EMBED_URL);
+  const [embedError, setEmbedError] = useState("");
+  const [embedLoading, setEmbedLoading] = useState(!FASTN_EMBED_URL);
+
+  useEffect(() => {
+    if (FASTN_EMBED_URL) return;
+    let cancelled = false;
+    fetch(`/api/embed-token?tenantId=tenant_${tenantId}&userId=demo-user`)
+      .then(async (response) => {
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || "Unable to mint a fastn embed token.");
+        const token = body.token || body.embedToken;
+        if (!token) throw new Error("Fastn returned no embed token.");
+        if (!cancelled) setEmbedUrl(`${FASTN_IFRAME_BASE}?token=${encodeURIComponent(token)}`);
+      })
+      .catch((error) => { if (!cancelled) setEmbedError(error.message); })
+      .finally(() => { if (!cancelled) setEmbedLoading(false); });
+    return () => { cancelled = true; };
+  }, [tenantId]);
+
   async function connect(item) {
-    if (FASTN_EMBED_URL) {
-      window.open(FASTN_EMBED_URL, "_blank", "noopener,noreferrer");
+    if (embedUrl) {
+      window.open(embedUrl, "_blank", "noopener,noreferrer");
       return;
     }
-    const response = await fetch(`/api/embed-token?tenantId=tenant_${tenantId}&userId=demo-user`);
-    const body = await response.json();
-    if (!response.ok) {
-      window.alert(body.error || `Unable to open the fastn widget for ${item.name}.`);
-      return;
-    }
-    const url = body.iframeUrl || body.embedUrl || body.url;
-    if (!url) {
-      window.alert("Fastn returned no embed URL. Check the Vercel function response.");
-      return;
-    }
-    window.open(url, "_blank", "noopener,noreferrer");
+    window.alert(embedError || `The secure fastn widget is still loading for ${item.name}.`);
   }
-  return <><div className="page-intro"><div><span className="eyebrow">CONNECTIONS</span><h2>Your tools, in one flow.</h2><p>Connect accounts for <strong>{tenant.name}</strong>. Each workspace stays isolated.</p></div><span className="tenant-badge"><span className="avatar">{tenant.initials}</span>{tenant.name}</span></div><div className="notice"><span>✦</span><div><strong>Fastn widget connected</strong><p>DocDrop widget <code>{FASTN_WIDGET_ID}</code> exposes all five tenant-scoped connectors. Workflow <code>{FASTN_WORKFLOW_ID}</code> routes documents without sharing credentials.</p></div></div>{FASTN_EMBED_URL ? <iframe className="fastn-frame" title="DocDrop fastn connections" src={FASTN_EMBED_URL} /> : <div className="embed-note"><span className="code-tag">&lt;/&gt;</span><div><strong>Secure widget token is server-side</strong><p>Click any Connect account button. DocDrop will request a tenant-scoped fastn token from your Vercel function.</p></div><span className="ready-pill">Widget ready</span></div>}<div className="integration-list">{integrations.map((item) => <div className="integration-row" key={item.id}><IntegrationCard item={item} connected={tenant.connected.includes(item.id)} /><button onClick={() => connect(item)} className={tenant.connected.includes(item.id) ? "row-button" : "row-button primary-small"}>{tenant.connected.includes(item.id) ? "Manage" : "Connect account"} <span>→</span></button></div>)}</div><div className="embed-note"><span className="code-tag">↗</span><div><strong>Tenant isolation is enabled</strong><p>Active tenant: <code>{tenantId}</code>. Backend webhook target: <code>{FASTN_WORKFLOW_ID}</code>.</p></div><button className="text-button" onClick={() => setActiveTab("overview")}>Back to overview</button></div></>;
+  return <><div className="page-intro"><div><span className="eyebrow">CONNECTIONS</span><h2>Your tools, in one flow.</h2><p>Connect accounts for <strong>{tenant.name}</strong>. Each workspace stays isolated.</p></div><span className="tenant-badge"><span className="avatar">{tenant.initials}</span>{tenant.name}</span></div><div className="notice"><span>✦</span><div><strong>Fastn widget connected</strong><p>DocDrop widget <code>{FASTN_WIDGET_ID}</code> exposes all five tenant-scoped connectors. Workflow <code>{FASTN_WORKFLOW_ID}</code> routes documents without sharing credentials.</p></div></div>{embedUrl ? <iframe className="fastn-frame" title="DocDrop fastn connections" src={embedUrl} allow="clipboard-write" referrerPolicy="strict-origin-when-cross-origin" /> : <div className="embed-note"><span className="code-tag">&lt;/&gt;</span><div><strong>{embedLoading ? "Loading secure fastn widget..." : "Fastn widget unavailable"}</strong><p>{embedError || "DocDrop is requesting a tenant-scoped embed token."}</p></div><span className="ready-pill">{embedLoading ? "Loading" : "Needs setup"}</span></div>}<div className="integration-list">{integrations.map((item) => <div className="integration-row" key={item.id}><IntegrationCard item={item} connected={tenant.connected.includes(item.id)} /><button onClick={() => connect(item)} className={tenant.connected.includes(item.id) ? "row-button" : "row-button primary-small"}>{tenant.connected.includes(item.id) ? "Manage" : "Connect account"} <span>→</span></button></div>)}</div><div className="embed-note"><span className="code-tag">↗</span><div><strong>Tenant isolation is enabled</strong><p>Active tenant: <code>{tenantId}</code>. Backend webhook target: <code>{FASTN_WORKFLOW_ID}</code>.</p></div><button className="text-button" onClick={() => setActiveTab("overview")}>Back to overview</button></div></>;
 }
 
 function Rules({ tenant, onSave }) {
