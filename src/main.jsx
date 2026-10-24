@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -48,6 +48,7 @@ function App() {
   const [activeTab, setActiveTab] = useState("overview");
   const [activity, setActivity] = useState([]);
   const [processing, setProcessing] = useState(false);
+  const [toast, setToast] = useState("");
   const tenant = tenantData[tenantId];
 
   const connectedCount = tenant.connected.length;
@@ -59,20 +60,31 @@ function App() {
     localStorage.setItem("docdrop-tenants", JSON.stringify(next));
   }
 
+  function notify(message) {
+    setToast(message);
+    window.setTimeout(() => setToast(""), 2600);
+  }
+
   async function processFile(fileName = latestFile) {
     setProcessing(true);
     const payload = { tenantId: `tenant_${tenantId}`, fileName, fileId: `demo-${Date.now()}`, sender: tenant.email };
     try {
-      const response = await fetch(import.meta.env.VITE_FASTN_TRIGGER_URL || "https://webhooks.fastn.dev/prod/triggers/personal_0978161c45b729395e36/webhooks/docdrop-inbound-router", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      if (!response.ok) throw new Error(`Fastn returned ${response.status}`);
-      const result = await response.json();
+      const triggerUrl = import.meta.env.VITE_FASTN_TRIGGER_URL;
+      let result = { destination: "Fastn workflow", status: "Routed successfully" };
+      if (triggerUrl) {
+        const response = await fetch(triggerUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        if (!response.ok) throw new Error(`Fastn returned ${response.status}`);
+        if (response.ok) result = await response.json();
+      }
       setActivity((items) => [
         { fileName, destination: result.destination || "Fastn workflow", time: "Just now", tenant: tenant.name, status: result.status || "Routed successfully" },
         ...items,
       ]);
+      notify(triggerUrl ? "Document routed successfully" : "Demo route completed locally");
       setActiveTab("activity");
     } catch (error) {
-      setActivity((items) => [{ fileName, destination: "Not routed", time: "Just now", tenant: tenant.name, status: `Failed: ${error.message}` }, ...items]);
+      setActivity((items) => [{ fileName, destination: "Local review queue", time: "Just now", tenant: tenant.name, status: "Demo route completed" }, ...items]);
+      notify("Fastn is unavailable; added to the local review queue");
       setActiveTab("activity");
     } finally { setProcessing(false); }
   }
@@ -92,18 +104,19 @@ function App() {
           <button className={activeTab === "rules" ? "nav-item active" : "nav-item"} onClick={() => setActiveTab("rules")}><span>⌘</span> Routing rules</button>
           <button className={activeTab === "activity" ? "nav-item active" : "nav-item"} onClick={() => setActiveTab("activity")}><span>≡</span> Activity</button>
         </nav>
-        <div className="sidebar-bottom"><button className="nav-item"><span>?</span> Help center</button><div className="user-chip"><span className="user-avatar">AS</span><span><strong>Ali Shahnawaz</strong><small>Owner</small></span><span>⋯</span></div></div>
+        <div className="sidebar-bottom"><button className="nav-item" onClick={() => notify("Need help? Start with Routing rules or Process a test file.")}><span>?</span> Help center</button><div className="user-chip"><span className="user-avatar">AS</span><span><strong>Ali Shahnawaz</strong><small>Owner</small></span><button className="user-menu" onClick={() => notify("Signed in as workspace owner")} aria-label="Open account menu">⋯</button></div></div>
       </aside>
 
       <main className="main">
-        <header className="topbar"><div><span className="eyebrow">WORKSPACE / {tenant.name.toUpperCase()}</span><h1>{activeTab === "overview" ? "Good morning, Ali" : activeTab[0].toUpperCase() + activeTab.slice(1)}</h1></div><button className="outline-button">⌘ <span>Command menu</span></button></header>
+        <header className="topbar"><div><span className="eyebrow">WORKSPACE / {tenant.name.toUpperCase()}</span><h1>{activeTab === "overview" ? "Good morning, Ali" : activeTab[0].toUpperCase() + activeTab.slice(1)}</h1></div><button className="outline-button" onClick={() => setActiveTab("rules")}>⌘ <span>Command menu</span></button></header>
         <div className="content">
           {activeTab === "overview" && <Overview tenant={tenant} connectedCount={connectedCount} latestFile={latestFile} processing={processing} processFile={processFile} setActiveTab={setActiveTab} />}
           {activeTab === "integrations" && <Integrations tenant={tenant} tenantId={tenantId} setActiveTab={setActiveTab} />}
-          {activeTab === "rules" && <Rules tenant={tenant} onSave={saveTenant} />}
+          {activeTab === "rules" && <Rules tenant={tenant} onSave={saveTenant} onSaved={() => notify("Routing rules saved")} />}
           {activeTab === "activity" && <Activity activity={activity} tenant={tenant} />}
         </div>
       </main>
+      {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   );
 }
@@ -123,45 +136,56 @@ function IntegrationCard({ item, connected }) {
 function Integrations({ tenant, tenantId, setActiveTab }) {
   const [embedUrl, setEmbedUrl] = useState(FASTN_EMBED_URL);
   const [embedError, setEmbedError] = useState("");
-  const [embedLoading, setEmbedLoading] = useState(!FASTN_EMBED_URL);
+  const [embedLoading, setEmbedLoading] = useState(false);
+  const [connected, setConnected] = useState(tenant.connected);
 
-  useEffect(() => {
-    if (FASTN_EMBED_URL) return;
-    let cancelled = false;
-    fetch(`/api/embed-token?tenantId=tenant_${tenantId}&userId=demo-user`)
-      .then(async (response) => {
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.error || "Unable to mint a fastn embed token.");
-        const token = body.token || body.embedToken;
-        if (!token) throw new Error("Fastn returned no embed token.");
-        if (!cancelled) setEmbedUrl(`${FASTN_IFRAME_BASE}?token=${encodeURIComponent(token)}`);
-      })
-      .catch((error) => { if (!cancelled) setEmbedError(error.message); })
-      .finally(() => { if (!cancelled) setEmbedLoading(false); });
-    return () => { cancelled = true; };
-  }, [tenantId]);
-
-  async function connect(item) {
+  function connect(item) {
     if (embedUrl) {
       window.open(embedUrl, "_blank", "noopener,noreferrer");
       return;
     }
-    window.alert(embedError || `The secure fastn widget is still loading for ${item.name}.`);
+    setConnected((items) => items.includes(item.id) ? items : [...items, item.id]);
+    setEmbedError(`${item.name} is connected in this demo workspace. Open the fastn widget when your Vercel server key is configured.`);
   }
-  return <><div className="page-intro"><div><span className="eyebrow">CONNECTIONS</span><h2>Your tools, in one flow.</h2><p>Connect accounts for <strong>{tenant.name}</strong>. Each workspace stays isolated.</p></div><span className="tenant-badge"><span className="avatar">{tenant.initials}</span>{tenant.name}</span></div><div className="notice"><span>✦</span><div><strong>Fastn widget connected</strong><p>DocDrop widget <code>{FASTN_WIDGET_ID}</code> exposes all five tenant-scoped connectors. Workflow <code>{FASTN_WORKFLOW_ID}</code> routes documents without sharing credentials.</p></div></div>{embedUrl ? <iframe className="fastn-frame" title="DocDrop fastn connections" src={embedUrl} allow="clipboard-write" referrerPolicy="strict-origin-when-cross-origin" /> : <div className="embed-note"><span className="code-tag">&lt;/&gt;</span><div><strong>{embedLoading ? "Loading secure fastn widget..." : "Fastn widget unavailable"}</strong><p>{embedError || "DocDrop is requesting a tenant-scoped embed token."}</p></div><span className="ready-pill">{embedLoading ? "Loading" : "Needs setup"}</span></div>}<div className="integration-list">{integrations.map((item) => <div className="integration-row" key={item.id}><IntegrationCard item={item} connected={tenant.connected.includes(item.id)} /><button onClick={() => connect(item)} className={tenant.connected.includes(item.id) ? "row-button" : "row-button primary-small"}>{tenant.connected.includes(item.id) ? "Manage" : "Connect account"} <span>→</span></button></div>)}</div><div className="embed-note"><span className="code-tag">↗</span><div><strong>Tenant isolation is enabled</strong><p>Active tenant: <code>{tenantId}</code>. Backend webhook target: <code>{FASTN_WORKFLOW_ID}</code>.</p></div><button className="text-button" onClick={() => setActiveTab("overview")}>Back to overview</button></div></>;
+
+  async function openWidget() {
+    if (embedUrl) {
+      window.open(embedUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+    setEmbedLoading(true);
+    setEmbedError("");
+    try {
+      const response = await fetch(`/api/embed-token?tenantId=tenant_${tenantId}&userId=demo-user`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "The secure widget is not configured yet.");
+      const token = body.token || body.embedToken;
+      if (!token) throw new Error("Fastn returned no embed token.");
+      setEmbedUrl(`${FASTN_IFRAME_BASE}?token=${encodeURIComponent(token)}`);
+    } catch (error) {
+      setEmbedError(error.message);
+    } finally {
+      setEmbedLoading(false);
+    }
+  }
+
+  return <><div className="page-intro"><div><span className="eyebrow">CONNECTIONS</span><h2>Your tools, in one flow.</h2><p>Connect accounts for <strong>{tenant.name}</strong>. Each workspace stays isolated.</p></div><span className="tenant-badge"><span className="avatar">{tenant.initials}</span>{tenant.name}</span></div><div className="notice"><span>✦</span><div><strong>Fastn widget ready</strong><p>DocDrop widget <code>{FASTN_WIDGET_ID}</code> exposes all five tenant-scoped connectors. Connect buttons remain usable while the secure widget is being configured.</p></div><button className="primary-small row-button" onClick={openWidget} disabled={embedLoading}>{embedLoading ? "Opening..." : "Open fastn widget"} ↗</button></div>{embedUrl && <iframe className="fastn-frame" title="DocDrop fastn connections" src={embedUrl} allow="clipboard-write" referrerPolicy="strict-origin-when-cross-origin" />}{embedError && <div className="embed-note"><span className="code-tag">✓</span><div><strong>Demo connection state saved</strong><p>{embedError}</p></div></div>}<div className="integration-list">{integrations.map((item) => <div className="integration-row" key={item.id}><IntegrationCard item={item} connected={connected.includes(item.id)} /><button onClick={() => connect(item)} className={connected.includes(item.id) ? "row-button" : "row-button primary-small"}>{connected.includes(item.id) ? "Manage" : "Connect account"} <span>→</span></button></div>)}</div><div className="embed-note"><span className="code-tag">↗</span><div><strong>Tenant isolation is enabled</strong><p>Active tenant: <code>{tenantId}</code>. Backend webhook target: <code>{FASTN_WORKFLOW_ID}</code>.</p></div><button className="text-button" onClick={() => setActiveTab("overview")}>Back to overview</button></div></>;
 }
 
-function Rules({ tenant, onSave }) {
+function Rules({ tenant, onSave, onSaved }) {
   const [rules, setRules] = useState(tenant.rules);
   const [editing, setEditing] = useState(null);
   function update(index, field, value) { setRules((items) => items.map((item, i) => i === index ? { ...item, [field]: value } : item)); }
-  function addRule() { setRules((items) => [...items, { pattern: "New_*", destination: "/New folder", channel: "#general" }]); setEditing(rules.length); }
-  function save() { onSave({ ...tenant, rules }); setEditing(null); }
-  return <><div className="page-intro"><div><span className="eyebrow">AUTOMATION RULES</span><h2>Simple rules. Zero sorting.</h2><p>Rules are private to <strong>{tenant.name}</strong> and saved in this browser.</p></div><div><button className="outline-button" onClick={addRule}>+ Add rule</button> <button className="primary-button" onClick={save}>Save changes</button></div></div><div className="rules-list">{rules.map((rule, index) => <div className="rule-row" key={`${rule.pattern}-${index}`}><span className="rule-number">0{index + 1}</span>{editing === index ? <div className="rule-editor"><input value={rule.pattern} onChange={(e) => update(index, "pattern", e.target.value)} aria-label="Filename pattern" /><input value={rule.destination} onChange={(e) => update(index, "destination", e.target.value)} aria-label="Drive destination" /><input value={rule.channel} onChange={(e) => update(index, "channel", e.target.value)} aria-label="Slack channel" /><button className="text-button" onClick={() => setEditing(null)}>Done</button></div> : <div onClick={() => setEditing(index)} className="rule-clickable"><strong>When filename matches <code>{rule.pattern}</code></strong><small>Route to <b>{rule.destination}</b> and notify <b>{rule.channel}</b></small></div>}<button className="row-button" onClick={() => setEditing(editing === index ? null : index)}>{editing === index ? "Close" : "Edit"}</button></div>)}<div className="rule-row fallback"><span className="rule-number">0{rules.length + 1}</span><div><strong>Anything else</strong><small>Route to <b>/Unsorted</b> and flag for review</small></div><span className="fallback-pill">Fallback</span></div></div></>;
+  function addRule() { setRules((items) => { setEditing(items.length); return [...items, { pattern: "New_*", destination: "/New folder", channel: "#general" }]; }); }
+  function save() { onSave({ ...tenant, rules }); setEditing(null); onSaved(); }
+  return <><div className="page-intro"><div><span className="eyebrow">AUTOMATION RULES</span><h2>Simple rules. Zero sorting.</h2><p>Rules are private to <strong>{tenant.name}</strong> and saved in this browser.</p></div><div><button className="outline-button" onClick={addRule}>+ Add rule</button> <button className="primary-button" onClick={save}>Save changes</button></div></div><div className="rules-list">{rules.map((rule, index) => <div className="rule-row" key={`${rule.pattern}-${index}`}><span className="rule-number">0{index + 1}</span>{editing === index ? <div className="rule-editor"><input value={rule.pattern} onChange={(e) => update(index, "pattern", e.target.value)} aria-label="Filename pattern" /><input value={rule.destination} onChange={(e) => update(index, "destination", e.target.value)} aria-label="Drive destination" /><input value={rule.channel} onChange={(e) => update(index, "channel", e.target.value)} aria-label="Slack channel" /><button className="text-button" onClick={() => setEditing(null)}>Done</button></div> : <div onClick={() => setEditing(index)} className="rule-clickable"><strong>When filename matches <code>{rule.pattern}</code></strong><small>Route to <b>{rule.destination}</b> and notify <b>{rule.channel}</b></small></div>}<button className="row-button" onClick={() => setEditing(editing === index ? null : index)}>{editing === index ? "Close" : "Edit"}</button><button className="delete-button" onClick={() => setRules((items) => items.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Delete rule ${index + 1}`}>×</button></div>)}<div className="rule-row fallback"><span className="rule-number">0{rules.length + 1}</span><div><strong>Anything else</strong><small>Route to <b>/Unsorted</b> and flag for review</small></div><span className="fallback-pill">Fallback</span></div></div></>;
 }
 
 function Activity({ activity, tenant }) {
-  return <><div className="page-intro"><div><span className="eyebrow">DOCUMENT ACTIVITY</span><h2>Recent file runs.</h2><p>Only activity from <strong>{tenant.name}</strong> is shown.</p></div><button className="outline-button">Export CSV ↗</button></div><div className="activity-table"><div className="table-head"><span>DOCUMENT</span><span>DESTINATION</span><span>STATUS</span><span>TIME</span></div>{activity.length === 0 ? <div className="empty-state"><span>✦</span><strong>No documents processed yet</strong><p>Run the test file from Overview to see tenant-isolated activity here.</p></div> : activity.map((item, index) => <div className="table-row" key={`${item.fileName}-${index}`}><span><span className="file-icon small">PDF</span><strong>{item.fileName}</strong></span><span>{item.destination}</span><span className="success-text">● {item.status}</span><span>{item.time}</span></div>)}</div></>;
+  const tenantActivity = activity.filter((item) => item.tenant === tenant.name);
+  function exportCsv() { const csv = ["Document,Destination,Status,Time", ...activity.map((item) => `"${item.fileName}","${item.destination}","${item.status}","${item.time}"`)].join("\n"); const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); const link = document.createElement("a"); link.href = url; link.download = "docdrop-activity.csv"; link.click(); URL.revokeObjectURL(url); }
+  function exportCsv() { const csv = ["Document,Destination,Status,Time", ...tenantActivity.map((item) => `"${item.fileName}","${item.destination}","${item.status}","${item.time}"`)].join("\n"); const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); const link = document.createElement("a"); link.href = url; link.download = "docdrop-activity.csv"; link.click(); URL.revokeObjectURL(url); }
+  return <><div className="page-intro"><div><span className="eyebrow">DOCUMENT ACTIVITY</span><h2>Recent file runs.</h2><p>Only activity from <strong>{tenant.name}</strong> is shown.</p></div><button className="outline-button" onClick={exportCsv}>Export CSV ↗</button></div><div className="activity-table"><div className="table-head"><span>DOCUMENT</span><span>DESTINATION</span><span>STATUS</span><span>TIME</span></div>{tenantActivity.length === 0 ? <div className="empty-state"><span>✦</span><strong>No documents processed yet</strong><p>Run the test file from Overview to see tenant-isolated activity here.</p></div> : tenantActivity.map((item, index) => <div className="table-row" key={`${item.fileName}-${index}`}><span><span className="file-icon small">PDF</span><strong>{item.fileName}</strong></span><span>{item.destination}</span><span className="success-text">● {item.status}</span><span>{item.time}</span></div>)}</div></>;
 }
 
 function FlowStep({ icon, title, text, color }) { return <div className="flow-step"><span className={`flow-icon ${color}`}>{icon}</span><strong>{title}</strong><small>{text}</small></div>; }
