@@ -15,6 +15,26 @@ npm run dev
 
 Open `http://localhost:5173`.
 
+## Vercel environment variables
+
+Add these in Vercel Project Settings -> Environment Variables. The first four
+are public configuration; the last four are server-side configuration used by
+`api/embed-token.js`.
+
+```text
+VITE_FASTN_WIDGET_ID=wgt_651b5e32ea5a
+VITE_FASTN_WORKFLOW_ID=wf_a1fd67dfd0b2
+VITE_FASTN_TRIGGER_URL=https://webhooks.fastn.dev/prod/triggers/personal_0978161c45b729395e36/webhooks/docdrop-inbound-router
+VITE_FASTN_EMBED_URL=
+FASTN_API_URL=<fastn API base URL>
+FASTN_API_KEY=<fastn API key>
+FASTN_IDV_SECRET=<fastn identity verification secret>
+FASTN_WIDGET_ID=wgt_651b5e32ea5a
+```
+
+Never commit the API key or identity secret, and never prefix either secret
+with `VITE_`.
+
 ## Demo path
 
 1. Start on **Overview** for Acme Accounting.
